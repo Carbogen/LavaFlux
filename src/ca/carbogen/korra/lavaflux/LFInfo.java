@@ -68,6 +68,7 @@ public class LFInfo
 		config.addDefault("ExtraAbilities.Carbogen.LavaFlux.cooldown", 8000);
 		config.addDefault("ExtraAbilities.Carbogen.LavaFlux.damage", 6);
 		config.addDefault("ExtraAbilities.Carbogen.LavaFlux.cleanupDelay", 6000);
+		config.addDefault("ExtraAbilities.Carbogen.LavaFlux.speed", "FAST");
 		config.addDefault("ExtraAbilities.Carbogen.LavaFlux.waveEnabled", true);
 		pk.saveConfig();
 		ProjectKorra.plugin.getServer().getPluginManager().registerEvents(new LFListener(), ProjectKorra.plugin);

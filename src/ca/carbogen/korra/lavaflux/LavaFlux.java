@@ -23,13 +23,23 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class LavaFlux
 {
+	private enum Speed
+	{
+		SLOW, NORMAL, FAST;
+
+		public static Speed fromString(String speed)
+		{
+			return valueOf(speed.toUpperCase());
+		}
+	}
+
 	// Configurable Constants
 	public final static int RANGE = ProjectKorra.plugin.getConfig().getInt("ExtraAbilities.Carbogen.LavaFlux.range");
-	public final static int COOLDOWN = ProjectKorra.plugin.getConfig().getInt(
-			"ExtraAbilities.Carbogen.LavaFlux.cooldown");
 	public final static int DAMAGE = ProjectKorra.plugin.getConfig().getInt("ExtraAbilities.Carbogen.LavaFlux.damage");
 	public final static int CLEANUP_DELAY = ProjectKorra.plugin.getConfig().getInt(
 			"ExtraAbilities.Carbogen.LavaFlux.cleanupDelay");
+	public final static Speed SPEED = Speed.fromString(ProjectKorra.plugin.getConfig().getString(
+			"ExtraAbilities.Carbogen.LavaFlux.speed"));
 	public final static boolean WAVE_ENABLED = ProjectKorra.plugin.getConfig().getBoolean(
 			"ExtraAbilities.Carbogen.LavaFlux.waveEnabled");
 	// Constants
@@ -41,8 +51,9 @@ public class LavaFlux
 	private static ConcurrentHashMap<Player, LavaFlux> instances = new ConcurrentHashMap<Player, LavaFlux>();
 	// Instance Specific Constants
 	private int range;
-	private int cooldown;
 	private int damage;
+	private int blockinterval;
+	private Speed speed;
 	private int cleanupdelay;
 
 	// Instance Variables
@@ -69,15 +80,25 @@ public class LavaFlux
 
 	public LavaFlux(Player p)
 	{
-		if (!isEligible(p))
+		if (!isEligible(p) || instances.containsKey(p))
 			return;
 
 		this.player = p;
 
 		setRange(RANGE);
-		setCooldown(COOLDOWN);
 		setDamage(DAMAGE);
 		setCleanupDelay(CLEANUP_DELAY);
+		setSpeed(SPEED);
+
+		switch(getSpeed())
+		{
+			case SLOW:
+				setBlockInterval(50);
+			case NORMAL:
+				setBlockInterval(25);
+			case FAST:
+				setBlockInterval(0);
+		}
 
 		loadAffectedBlocks();
 	}
@@ -136,7 +157,7 @@ public class LavaFlux
 		aebli = affectedEarthBlocks.listIterator();
 		awbli = affectedWaveBlocks.listIterator();
 
-		Methods.getBendingPlayer(player.getName()).addCooldown("LavaFlux", getCooldown());
+		Methods.getBendingPlayer(player.getName()).addCooldown("LavaFlux", Integer.MAX_VALUE);
 
 		instances.put(player, this);
 	}
@@ -338,6 +359,8 @@ public class LavaFlux
 		if (!convertedEarthBlocks.contains(b))
 		{
 			convertedEarthBlocks.add(new TempBlock(b, Material.STATIONARY_LAVA, (byte) 0));
+
+			Methods.playEarthbendingSound(b.getLocation());
 		}
 	}
 
@@ -345,7 +368,12 @@ public class LavaFlux
 	{
 		if (!convertedWaveBlocks.contains(b))
 		{
+			if(Methods.isPlant(b))
+				b.setType(Material.AIR);
+
 			convertedWaveBlocks.add(new TempBlock(b, Material.STATIONARY_LAVA, (byte) 0));
+
+			affectFromWave(b);
 		}
 	}
 
@@ -357,13 +385,22 @@ public class LavaFlux
 		convertedWaveBlocks.clear();
 	}
 
+	public boolean isLava(Block block)
+	{
+		return (block.getType() == Material.LAVA || block.getType() == Material.STATIONARY_LAVA);
+	}
+
 	public void removeDistantWave(Block current)
 	{
+		List<Block> near = Methods.getBlocksAroundPoint(current.getLocation(), 3);
+
+		for(int i = 0; i < near.size(); i++)
+			if(!isLava(near.get(i)))
+				near.remove(i);
+
 		for (TempBlock tb : convertedWaveBlocks)
-		{
-			if (tb.getLocation().distance(current.getLocation()) > 2)
+			if(!near.contains(tb.getBlock()))
 				tb.revertBlock();
-		}
 	}
 
 	public void affectFromWave(Block wave)
@@ -374,7 +411,7 @@ public class LavaFlux
 			{
 				e.setFireTicks(100);
 				Methods.damageEntity(player, e, getDamage());
-				Methods.setVelocity(e, new Vector(0, -0.1, 0));
+				Methods.setVelocity(e, e.getVelocity().add(new Vector(0, 0.1, 0)));
 			}
 		}
 	}
@@ -389,12 +426,12 @@ public class LavaFlux
 
 		long time = System.currentTimeMillis();
 
-		if (isReverting && isSlapFinished && isWaveFinished && time > lastRevertTime + REVERT_INTERVAL)
+		if (isReverting && isSlapFinished && time > lastRevertTime + REVERT_INTERVAL)
 		{
 			if (convertedLavaBlocks.size() == 0)
 			{
-				player.sendMessage("Done reverting!");
 				instances.remove(player);
+				Methods.getBendingPlayer(player.getName()).removeCooldown("LavaFlux");
 				return;
 			}
 
@@ -406,13 +443,13 @@ public class LavaFlux
 			return;
 		}
 
-		if (isSlapFinished && isWaveFinished && time > lastProgressTime + cleanupdelay)
+		if (isSlapFinished && time > lastProgressTime + getCleanupDelay())
 		{
 			remove();
 			return;
 		}
 
-		if (!isSlapFinished && time > lastProgressTime + BLOCK_INTERVAL)
+		if (!isSlapFinished && time > lastProgressTime + getBlockInterval())
 		{
 			lastProgressTime = time;
 
@@ -420,7 +457,7 @@ public class LavaFlux
 
 			Block block;
 
-			for (int i = 0; i < 3; i++)
+			//for (int i = 0; i < 3; i++)
 			{
 				if (aebli.hasNext())
 				{
@@ -429,47 +466,25 @@ public class LavaFlux
 				}
 
 				else
-					return;
-
-				if (block != null)
 				{
-					if (!Methods.isRegionProtectedFromBuild(player, "LavaFlux", block.getLocation()))
+					removeWave();
+					return;
+				}
+
+				if(block != null)
+				{
+					if(Methods.isEarthbendable(player, block))
 					{
-						if (Methods.isEarthbendable(player, block))
+						createLava(block);
+
+						if(WAVE_ENABLED)
 						{
-							createLava(block);
-
-							isWaveFinished = true;
-
-							if (!WAVE_ENABLED)
-								continue;
-
-							Block wave;
-
-							if (awbli.hasNext())
-							{
-								isWaveFinished = false;
-								wave = awbli.next();
-							}
-
-							else
-							{
-								removeWave();
-								return;
-							}
-
-							if (wave != null)
-							{
-								if (Methods.isTransparentToEarthbending(player, wave))
-								{
-									createWave(wave);
-
-									removeDistantWave(wave);
-
-									affectFromWave(wave);
-								}
-							}
+							createWave(block.getRelative(BlockFace.UP));
+							removeDistantWave(block.getRelative(BlockFace.UP));
 						}
+
+						else
+							affectFromWave(block);
 					}
 				}
 			}
@@ -479,14 +494,12 @@ public class LavaFlux
 	public void remove()
 	{
 		solidifyLava();
-		player.sendMessage("Remove called!");
 
 		Runnable r = new Runnable()
 		{
 			public void run()
 			{
 				revertStone();
-				player.sendMessage("Reverting!");
 			}
 		};
 
@@ -529,14 +542,24 @@ public class LavaFlux
 		this.damage = newValue;
 	}
 
-	public int getCooldown()
+	public void setSpeed(Speed newSpeed)
 	{
-		return this.cooldown;
+		this.speed = newSpeed;
 	}
 
-	public void setCooldown(int newValue)
+	public Speed getSpeed()
 	{
-		this.cooldown = newValue;
+		return this.speed;
+	}
+
+	public void setBlockInterval(int newValue)
+	{
+		this.blockinterval = newValue;
+	}
+
+	public int getBlockInterval()
+	{
+		return this.blockinterval;
 	}
 
 	public int getCleanupDelay()
